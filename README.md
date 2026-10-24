@@ -72,6 +72,19 @@ bin/privacy-guard audit --history  # scan every commit and message in its histor
 tests/run-tests.sh                 # end-to-end tests in a temp dir
 ```
 
+## Claude Code: don't let the agent skip the hooks
+
+`claude-code/git-bypass-guard.sh` is a Claude Code `PreToolUse` hook for the Bash tool.
+Before the agent runs a command that would skip git hooks (`--no-verify`, `commit -n`),
+change `core.hooksPath`, force-push, or rewrite history (`filter-repo`, `filter-branch`),
+it asks you for approval. It only reads the command text. Install it on the machine where
+Claude Code runs:
+
+```json
+"hooks": { "PreToolUse": [ { "matcher": "Bash", "hooks": [
+  { "type": "command", "command": "/home/<you>/.claude/hooks/git-bypass-guard.sh", "timeout": 10 } ] } ] }
+```
+
 ## Limits
 
 - Hooks run on the machine where you commit and push. A push from another machine, or
