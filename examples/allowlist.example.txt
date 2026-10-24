@@ -1,0 +1,4 @@
+# privacy-guard global allowlist -- copy to ~/.config/git-privacy-guard/allowlist.txt.
+# Exact matched texts (case-insensitive) that are NOT private, e.g. a placeholder value.
+# For one repo only, put the text in that repo's .privacy-guard-allow instead.
+0123456789abcdef0123456789abcdef01234567

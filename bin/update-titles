@@ -1,0 +1,178 @@
+#!/usr/bin/env python3
+"""Build the private title list privacy-guard matches against.
+
+Sources (all configured in $CONF_DIR/sources.json, see examples/sources.example.json):
+  * Radarr / Sonarr: every movie and series title (API key read from the app's own
+    config.xml at run time, never copied anywhere)
+  * Transmission: every torrent name
+  * folders: entry names under media / download roots (e.g. a NAS mount)
+
+The list only ever grows: each run is merged with the previous titles.txt, so a source
+that is offline today (a NAS that's switched off, a stopped container) never removes
+titles. Folder listings run in a child process with a timeout, because a wedged network
+mount can block a filesystem call forever.
+"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+import unicodedata
+import urllib.error
+import urllib.request
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+CONF_DIR = Path(os.environ.get("PRIVACY_GUARD_CONFIG", Path.home() / ".config/git-privacy-guard"))
+TITLES = CONF_DIR / "titles.txt"
+
+# Folder/file names that are structure, not titles.
+GENERIC = {
+    "season", "specials", "extras", "featurettes", "behind the scenes", "deleted scenes",
+    "interviews", "scenes", "shorts", "trailers", "other", "sample", "samples", "subs",
+    "subtitles", "movies", "series", "tv shows", "downloads", "incomplete", "complete",
+    # category folders of the download stack itself -- also names of tools and repos
+    "radarr", "sonarr", "lidarr", "readarr", "prowlarr", "transmission", "relocarr",
+    "tv-sonarr", "radarr-movies", "music",
+}
+VIDEO_EXT = re.compile(r"\.(mkv|mp4|avi|m4v|mov|wmv|ts|srt|sub|idx)$", re.I)
+# Album tracks ('03 Another Night.mp3'), covers and info files: their names are ordinary
+# phrases that would cause false alarms, and the album/movie folder above them is kept anyway.
+SKIP_EXT = re.compile(r"\.(mp3|flac|m4a|ogg|opus|wav|aac|jpe?g|png|gif|txt|nfo|sfv|m3u8?|cue|log|url|exe|part)$", re.I)
+CUT = re.compile(
+    # only release tags -- no plain words like 'web' or 'complete' that real titles contain
+    r"[\s(\[]*\b((19|20)\d{2}|\d{3,4}p|4k|uhd|bluray|blu-ray|brrip|bdrip|webrip|web-dl|"
+    r"hdtv|dvdrip|x264|x265|h\.?264|h\.?265|hevc|remux|repack|s\d{1,2}(e\d{1,3})?|"
+    r"season\s*\d+|\d{3}kbps)\b.*$",
+    re.I,
+)
+
+
+def log(msg: str) -> None:
+    print(f"update-titles: {msg}", file=sys.stderr)
+
+
+def clean(name: str) -> str | None:
+    """'www.Site.org - Some.Movie.2025.1080p.BluRay-GRP.mkv' -> 'Some Movie'."""
+    if SKIP_EXT.search(name.strip()):
+        return None
+    s = VIDEO_EXT.sub("", name.strip())
+    s = re.sub(r"^\s*www\.[^\s]+\s*-\s*", "", s, flags=re.I)     # 'www.site.org - ' prefix
+    s = re.sub(r"\[[^\]]*\]|\{[^}]*\}", " ", s)                   # [tags] {tags}
+    if s.count(".") >= 2:                                          # dotted release names
+        s = re.sub(r"(?<=\w)\.(?=\w)", " ", s)
+    s = s.replace("_", " ")
+    s = re.sub(r"(?<=[A-Za-z])((19|20)\d{2})$", r" \1", s)         # 'Title2022' (relocarr folders)
+    s = CUT.sub("", s)
+    s = re.sub(r"\s*\(\s*\)\s*$", "", s)
+    s = re.sub(r"\s+", " ", s).strip(" -.,")
+    if not s or s.lower() in GENERIC or s.isdigit():
+        return None
+    words = s.split()
+    if len(words) >= 2 and len(s) >= 6:
+        return s
+    if len(words) == 1 and len(s) >= 8:                             # 'Longtitle', not 'Up' or 'Her'
+        return s
+    return None
+
+
+def ascii_fold(s: str) -> str:
+    """'Élan Exemplaire' -> 'Elan Exemplaire' (people often type titles without accents)."""
+    return unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode()
+
+
+def http_json(url: str, headers: dict, data: bytes | None = None, timeout: float = 15):
+    req = urllib.request.Request(url, data=data, headers=headers)
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.load(r)
+
+
+def from_arr(src: dict) -> set[str]:
+    key = ET.parse(src["config_xml"]).getroot().findtext("ApiKey")
+    endpoint = "movie" if src["kind"] == "radarr" else "series"
+    items = http_json(f"{src['url'].rstrip('/')}/api/v3/{endpoint}", {"X-Api-Key": key})
+    names = set()
+    for it in items:
+        for field in ("title", "originalTitle"):
+            if it.get(field):
+                names.add(it[field])
+        for f in (it.get("folderName"), it.get("path")):
+            if f:
+                names.add(Path(f).name)
+    return names
+
+
+def from_transmission(url: str) -> set[str]:
+    body = json.dumps({"method": "torrent-get", "arguments": {"fields": ["name"]}}).encode()
+    headers = {"Content-Type": "application/json"}
+    try:
+        return {t["name"] for t in http_json(url, headers, body)["arguments"]["torrents"]}
+    except urllib.error.HTTPError as e:                 # 409 = session-id handshake
+        if e.code != 409:
+            raise
+        headers["X-Transmission-Session-Id"] = e.headers["X-Transmission-Session-Id"]
+        return {t["name"] for t in http_json(url, headers, body)["arguments"]["torrents"]}
+
+
+def from_folder(path: str, depth: int, timeout: float) -> set[str] | None:
+    p = subprocess.Popen(
+        ["find", path, "-mindepth", "1", "-maxdepth", str(depth), "-printf", "%f\n"],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+    )
+    try:
+        out, _ = p.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        p.kill()            # don't wait: a process stuck on a dead mount may never exit
+        return None
+    return set(out.splitlines()) if p.returncode == 0 else None
+
+
+def main() -> int:
+    conf = json.loads((CONF_DIR / "sources.json").read_text())
+    raw: set[str] = set()
+    for src in conf.get("arr", []):
+        try:
+            got = from_arr(src)
+            log(f"{src['kind']}: {len(got)} names")
+            raw |= got
+        except Exception as e:
+            log(f"{src['kind']}: skipped ({e.__class__.__name__}: {e})")
+    if conf.get("transmission"):
+        try:
+            got = from_transmission(conf["transmission"])
+            log(f"transmission: {len(got)} torrents")
+            raw |= got
+        except Exception as e:
+            log(f"transmission: skipped ({e.__class__.__name__}: {e})")
+    for f in conf.get("folders", []):
+        got = from_folder(f["path"], f.get("depth", 1), conf.get("folder_timeout_s", 20))
+        log(f"folder {f['path']}: {'unreachable, skipped' if got is None else f'{len(got)} entries'}")
+        raw |= got or set()
+
+    ignore = {n.lower() for n in conf.get("ignore_names", [])}     # your own false positives
+    titles = set()
+    for name in raw:
+        if name.lower() in ignore:
+            continue
+        t = clean(name)
+        if t:
+            titles.add(t)
+            if ascii_fold(t) != t:
+                titles.add(ascii_fold(t))
+
+    old = set()
+    if TITLES.exists():
+        old = {l for l in TITLES.read_text().splitlines() if l and not l.startswith("#")}
+    merged = sorted(old | titles, key=str.lower)
+    TITLES.write_text(
+        "# Generated by update-titles -- private, never commit. One title per line.\n"
+        + "\n".join(merged) + "\n"
+    )
+    TITLES.chmod(0o600)
+    log(f"{len(titles)} titles from sources, {len(merged) - len(old)} new, {len(merged)} total")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

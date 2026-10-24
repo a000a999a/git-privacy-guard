@@ -1,0 +1,13 @@
+{
+  "arr": [
+    {"kind": "radarr", "url": "http://localhost:7878", "config_xml": "/path/to/radarr/config.xml"},
+    {"kind": "sonarr", "url": "http://localhost:8989", "config_xml": "/path/to/sonarr/config.xml"}
+  ],
+  "transmission": "http://localhost:9091/transmission/rpc",
+  "folders": [
+    {"path": "/path/to/downloads", "depth": 2},
+    {"path": "/mnt/nas/movies", "depth": 1},
+    {"path": "/mnt/nas/series", "depth": 1}
+  ],
+  "folder_timeout_s": 20
+}

@@ -1,0 +1,273 @@
+#!/usr/bin/env bash
+# privacy-guard: keeps private data (and secrets) out of commits pushed to public remotes.
+#
+# Two checks run over every added line and every commit message:
+#   1. gitleaks (default rules)            -> real secrets: API keys, tokens, passwords
+#   2. your private lists (never in git)   -> denylist regexes + titles (case-insensitive)
+#
+# Modes (normally called by the hooks in ../hooks):
+#   privacy-guard hook pre-commit                 scan staged changes      (warn by default)
+#   privacy-guard hook commit-msg <file>          scan the commit message  (warn by default)
+#   privacy-guard hook pre-push <remote> <url>    scan outgoing commits    (block if public)
+#   privacy-guard audit [--history]               scan this repo's tree, or all of its history
+set -uo pipefail
+
+GUARD_HOME="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+CONF_DIR="${PRIVACY_GUARD_CONFIG:-$HOME/.config/git-privacy-guard}"
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/git-privacy-guard"
+GITLEAKS="${GITLEAKS:-$(command -v gitleaks || echo "$HOME/.local/bin/gitleaks")}"
+GH="${GH:-$(command -v gh || true)}"
+
+# Overridable in $CONF_DIR/guard.conf
+COMMIT_MODE=warn        # warn | block   (pre-commit and commit-msg)
+PRIVATE_PUSH_MODE=warn  # warn | block   (list findings when the remote is a private GitHub repo)
+
+[ -f "$CONF_DIR/guard.conf" ] && . "$CONF_DIR/guard.conf"
+
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+mkdir -p "$CACHE_DIR"
+
+say() { printf 'privacy-guard: %s\n' "$*" >&2; }
+
+# ── private lists ────────────────────────────────────────────────────────────
+
+load_lists() {
+    grep -v -E '^[[:space:]]*(#|$)' "$CONF_DIR/denylist.txt" 2>/dev/null > "$TMP/deny" || true
+    grep -v -E '^[[:space:]]*(#|$)' "$CONF_DIR/titles.txt" 2>/dev/null > "$TMP/titles" || true
+    {
+        grep -v -E '^[[:space:]]*(#|$)' "$CONF_DIR/allowlist.txt" 2>/dev/null
+        local top
+        top="$(git rev-parse --show-toplevel 2>/dev/null)" &&
+            grep -v -E '^[[:space:]]*(#|$)' "$top/.privacy-guard-allow" 2>/dev/null
+    } | tr '[:upper:]' '[:lower:]' > "$TMP/allow" || true
+    if [ ! -s "$TMP/deny" ] && [ ! -s "$TMP/titles" ]; then
+        say "WARNING: no private lists in $CONF_DIR -- only checking for secrets"
+    fi
+}
+
+# Reads "LOCATION<TAB>TEXT" lines from $TMP/in, prints "LOCATION<TAB>MATCH" for each hit.
+# Returns 2 if a private list itself is broken (e.g. an invalid regex).
+match_lines() {
+    cut -f1 < "$TMP/in" > "$TMP/loc"
+    cut -f2- < "$TMP/in" > "$TMP/text"
+    {
+        [ -s "$TMP/deny" ] && grep -n -o -i -E -f "$TMP/deny" "$TMP/text"
+        [ -s "$TMP/titles" ] && grep -n -o -i -w -F -f "$TMP/titles" "$TMP/text"
+    } 2> "$TMP/grep-err" | awk -F'\t' -v OFS='\t' '
+        FILENAME == ARGV[1] { allow[$0] = 1; next }
+        FILENAME == ARGV[2] { loc[FNR] = $0; next }
+        {
+            n = substr($0, 1, index($0, ":") - 1); m = substr($0, index($0, ":") + 1)
+            if (tolower(m) in allow) next
+            key = loc[n] SUBSEP tolower(m)
+            if (!(key in seen)) { seen[key] = 1; print loc[n], m }
+        }' "$TMP/allow" "$TMP/loc" -
+    if [ -s "$TMP/grep-err" ]; then
+        say "ERROR in a private list (bad regex?):"; cat "$TMP/grep-err" >&2
+        return 2
+    fi
+}
+
+# ── extractors: emit "LOCATION<TAB>TEXT" ─────────────────────────────────────
+
+# Added lines of a unified diff with -U0 on stdin; $1 = location prefix.
+added_lines() {
+    awk -v OFS='\t' -v pre="$1" '
+        /^\+\+\+ /       { f = substr($0, 5); sub(/^b\//, "", f); next }
+        /^@@ /           { split($3, a, ","); n = substr(a[1], 2) + 0; next }
+        /^\+/            { print pre f ":" n, substr($0, 2); n++ }'
+}
+
+staged_lines() {
+    git diff --cached -U0 --no-color --no-ext-diff --no-renames | added_lines ""
+}
+
+message_lines() { # $1 = commit message file
+    grep -v '^#' "$1" | awk -v OFS='\t' '{ print "commit message:" NR, $0 }'
+}
+
+# All commits in a rev-list range ("$@"), messages and added lines.
+range_lines() {
+    git log -p -U0 --no-color --no-ext-diff --no-renames \
+        --format='@@PG-COMMIT@@ %h%n%B@@PG-END@@' "$@" |
+    awk -v OFS='\t' '
+        /^@@PG-COMMIT@@ / { c = $2; inmsg = 1; ln = 0; next }
+        /^@@PG-END@@$/    { inmsg = 0; next }
+        inmsg             { ln++; print c " message:" ln, $0; next }
+        /^\+\+\+ /        { f = substr($0, 5); sub(/^b\//, "", f); next }
+        /^@@ /            { split($3, a, ","); n = substr(a[1], 2) + 0; next }
+        /^\+/             { print c " " f ":" n, substr($0, 2); n++ }'
+}
+
+tree_lines() { # every line of every tracked text file at HEAD
+    git grep -I -n -e '' HEAD -- . 2>/dev/null |
+        awk -v OFS='\t' '{ sub(/^HEAD:/, ""); i = index($0, ":"); j = index(substr($0, i + 1), ":")
+                           print substr($0, 1, i + j - 1), substr($0, i + j + 1) }'
+}
+
+# ── reporting ────────────────────────────────────────────────────────────────
+
+report() { # $1 = findings file, $2 = title
+    [ -s "$1" ] || return 0
+    say "$2"
+    awk -F'\t' '{ printf "    %-50s \"%s\"\n", $1, $2 }' "$1" | head -40 >&2
+    local total; total=$(wc -l < "$1")
+    [ "$total" -gt 40 ] && say "    ... and $((total - 40)) more"
+    return 1
+}
+
+run_gitleaks() { # gitleaks args...; returns 1 on findings
+    if [ ! -x "$GITLEAKS" ]; then
+        say "WARNING: gitleaks not found at $GITLEAKS -- secrets are NOT being checked"
+        return 0
+    fi
+    # -v prints each finding (file, line, rule); --redact masks the secret itself
+    "$GITLEAKS" git -v --no-banner --redact --log-level=error --exit-code=1 "$@" "$(git rev-parse --show-toplevel)" >&2
+}
+
+# ── remote visibility ────────────────────────────────────────────────────────
+
+# Prints private | public | unknown for a remote URL. Unknown counts as public.
+remote_visibility() {
+    local url="$1" path vis cache
+    case "$url" in
+        *github.com[:/]*) ;;
+        *) echo unknown; return ;;
+    esac
+    path="${url#*github.com}"; path="${path#[:/]}"; path="${path%/}"; path="${path%.git}"
+    cache="$CACHE_DIR/visibility-${path//\//_}"
+    if [ -f "$cache" ] && [ -n "$(find "$cache" -mmin -1440 2>/dev/null)" ]; then
+        cat "$cache"; return
+    fi
+    vis=unknown
+    if [ -n "$GH" ]; then
+        case "$("$GH" api "repos/$path" --jq '.private' 2>/dev/null)" in
+            true) vis=private ;;
+            false) vis=public ;;
+        esac
+    fi
+    [ "$vis" != unknown ] && echo "$vis" > "$cache"
+    echo "$vis"
+}
+
+# ── chaining: still run a repo's own .git/hooks/<name> if it has one ─────────
+
+chain_local_hook() { # $1 = hook name, rest = args; stdin passed through
+    local name="$1"; shift
+    local h; h="$(git rev-parse --git-common-dir)/hooks/$name"
+    if [ -x "$h" ]; then
+        "$h" "$@"
+        return $?
+    fi
+    return 0
+}
+
+FIX_HINT="Remove it (git commit --amend, or git rebase -i for older commits). Only for a harmless
+false positive: add the exact matched text to .privacy-guard-allow in the repo root."
+
+# ── modes ────────────────────────────────────────────────────────────────────
+
+hook_pre_commit() {
+    load_lists
+    staged_lines > "$TMP/in"
+    match_lines > "$TMP/found"; local rc=$?
+    local bad=0
+    report "$TMP/found" "possible private data in staged changes:" || bad=1
+    run_gitleaks --pre-commit --staged || { bad=1; say "gitleaks found a possible secret in staged changes (above)"; }
+    [ $rc -eq 2 ] && bad=1
+    if [ $bad -eq 1 ]; then
+        if [ "$COMMIT_MODE" = block ]; then say "commit blocked. $FIX_HINT"; return 1; fi
+        say "(warning only -- a push to a public repo will be blocked until this is fixed)"
+    fi
+    chain_local_hook pre-commit "$@"
+}
+
+hook_commit_msg() {
+    load_lists
+    message_lines "$1" > "$TMP/in"
+    match_lines > "$TMP/found"; local rc=$?
+    if ! report "$TMP/found" "possible private data in the commit message:" || [ $rc -eq 2 ]; then
+        if [ "$COMMIT_MODE" = block ]; then say "commit blocked -- reword the message."; return 1; fi
+        say "(warning only -- a push to a public repo will be blocked until the message is reworded)"
+    fi
+    chain_local_hook commit-msg "$@"
+}
+
+hook_pre_push() {
+    local remote="$1" url="$2"
+    cat > "$TMP/stdin"
+    load_lists
+    local vis; vis="$(remote_visibility "$url")"
+    local zero=0000000000000000000000000000000000000000
+    local list_bad=0 secret_bad=0 any=0
+    local lref lsha rref rsha target range
+    : > "$TMP/in"
+    while read -r lref lsha rref rsha; do
+        [ -z "${lsha:-}" ] && continue
+        [ "$lsha" = "$zero" ] && continue                   # branch/tag deletion
+        any=1
+        if [ "$(git cat-file -t "$lsha")" = tag ]; then      # annotated tag: scan its message
+            git cat-file -p "$lsha" | sed '1,/^$/d' |
+                awk -v OFS='\t' -v t="${lref#refs/tags/}" '{ print "tag " t " message:" NR, $0 }' >> "$TMP/in"
+        fi
+        target="$(git rev-parse "$lsha^{commit}" 2>/dev/null)" || continue
+        if [ "$rsha" != "$zero" ] && git cat-file -e "$rsha^{commit}" 2>/dev/null; then
+            range=("$rsha..$target")
+        else
+            range=("$target" --not --remotes="$remote")     # new branch: everything not on the remote yet
+        fi
+        range_lines "${range[@]}" >> "$TMP/in"
+        run_gitleaks --log-opts="${range[*]}" || secret_bad=1
+    done < "$TMP/stdin"
+    [ $any -eq 0 ] && { chain_local_hook pre-push "$@" < "$TMP/stdin"; return $?; }
+
+    match_lines > "$TMP/found"; local rc=$?
+    report "$TMP/found" "possible private data in commits being pushed to $url ($vis repo):" || list_bad=1
+    [ $rc -eq 2 ] && list_bad=1
+
+    if [ $secret_bad -eq 1 ]; then
+        say "push BLOCKED: gitleaks found a possible secret (above). Remove it (git commit --amend, or git"
+        say "rebase -i for older commits) and rotate it if it was real. Only for a harmless false positive:"
+        say "add its Fingerprint line to .gitleaksignore in the repo root."
+        return 1
+    fi
+    if [ $list_bad -eq 1 ]; then
+        if [ "$vis" = private ] && [ "$PRIVATE_PUSH_MODE" != block ]; then
+            say "(private repo -- warning only. It would be BLOCKED if this repo were public.)"
+        else
+            say "push BLOCKED ($vis remote). $FIX_HINT"
+            return 1
+        fi
+    fi
+    chain_local_hook pre-push "$@" < "$TMP/stdin"
+}
+
+audit() {
+    load_lists
+    if [ "${1:-}" = --history ]; then
+        range_lines --all > "$TMP/in"
+        run_gitleaks --log-opts="--all" || say "gitleaks: possible secrets in history (above)"
+    else
+        tree_lines > "$TMP/in"
+        # tracked files only: ignored stuff like .venv/ or local .env is not going to be pushed
+        mkdir -p "$TMP/tree" && git archive HEAD | tar -x -C "$TMP/tree"
+        "$GITLEAKS" dir -v --no-banner --redact --log-level=error "$TMP/tree" >&2 ||
+            say "gitleaks: possible secrets in tracked files (above)"
+    fi
+    match_lines > "$TMP/found"
+    report "$TMP/found" "audit findings in $(basename "$(git rev-parse --show-toplevel)"):" && say "audit: clean"
+    return 0
+}
+
+case "${1:-}" in
+    hook)
+        case "${2:-}" in
+            pre-commit) shift 2; hook_pre_commit "$@" ;;
+            commit-msg) shift 2; hook_commit_msg "$@" ;;
+            pre-push)   shift 2; hook_pre_push "$@" ;;
+            *) say "unknown hook ${2:-}"; exit 2 ;;
+        esac ;;
+    audit) shift; audit "$@" ;;
+    *) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

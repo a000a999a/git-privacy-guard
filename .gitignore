@@ -1,0 +1,7 @@
+# The real lists are private and live in ~/.config/git-privacy-guard/, never here.
+# These patterns are a second line of defence in case one is copied into the repo by mistake.
+denylist.txt
+allowlist.txt
+titles.txt
+sources.json
+guard.conf

@@ -1,0 +1,30 @@
+name: check
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: No private lists in the repo
+        run: |
+          found=$(git ls-files | grep -E '(^|/)(denylist|allowlist|titles)\.txt$|(^|/)sources\.json$|(^|/)guard\.conf$' || true)
+          if [ -n "$found" ]; then echo "Private list committed: $found"; exit 1; fi
+
+      - name: Install gitleaks
+        run: |
+          v=8.30.1
+          curl -sSfL -o gl.tgz "https://github.com/gitleaks/gitleaks/releases/download/v${v}/gitleaks_${v}_linux_x64.tar.gz"
+          curl -sSfL -o sums.txt "https://github.com/gitleaks/gitleaks/releases/download/v${v}/gitleaks_${v}_checksums.txt"
+          grep " gitleaks_${v}_linux_x64.tar.gz$" sums.txt | sed 's/gitleaks_.*/gl.tgz/' | sha256sum -c -
+          tar -xzf gl.tgz gitleaks && sudo install -m 755 gitleaks /usr/local/bin/gitleaks
+
+      - name: Tests
+        run: tests/run-tests.sh
