@@ -88,6 +88,15 @@ Configure in `guard.conf`:
 | `PUSH_TIME_GATE` | `true` | `false` disables the time check entirely |
 | `PUSH_EVENING_HOUR` | `18` | weekday pushes allowed from this hour onward (0-23) |
 
+For an urgent one-off push during restricted hours (e.g. a security fix), prefix with
+`PG_TIME_OVERRIDE=1`:
+
+```bash
+PG_TIME_OVERRIDE=1 git push origin main
+```
+
+This bypasses the time check only — content checks still run.
+
 ## Claude Code: gatekeeper hook
 
 `claude-code/git-bypass-guard.sh` is a Claude Code `PreToolUse` hook for the Bash tool.

@@ -36,13 +36,14 @@ say() { printf 'privacy-guard: %s\n' "$*" >&2; }
 
 check_push_time_window() {
     [ "$PUSH_TIME_GATE" = true ] || return 0
+    [ "${PG_TIME_OVERRIDE:-}" = 1 ] && { say "time-window override active"; return 0; }
     local dow hour
     dow=${_PG_TEST_DOW:-$(date +%u)}    # 1=Mon..7=Sun; _PG_TEST_* override for testing
     hour=${_PG_TEST_HOUR:-$(date +%-H)} # 0-23 without leading zero
     [ "$dow" -ge 6 ] && return 0
     [ "$hour" -ge "$PUSH_EVENING_HOUR" ] && return 0
     say "push BLOCKED: only allowed on weekends or weekdays from ${PUSH_EVENING_HOUR}:00 onward."
-    say "Current: $(date '+%A %H:%M'). Wait for the evening window or the weekend."
+    say "Current: $(date '+%A %H:%M'). Use PG_TIME_OVERRIDE=1 with explicit approval."
     return 1
 }
 

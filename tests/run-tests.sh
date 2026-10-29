@@ -86,6 +86,8 @@ echo "tw2" > tw2.txt; git add tw2.txt; git commit -q -m "tw2" 2>/dev/null
 _PG_TEST_DOW=3 _PG_TEST_HOUR=19 expect 0 "push allowed on Wednesday evening"  git push -q origin main
 echo "tw3" > tw3.txt; git add tw3.txt; git commit -q -m "tw3" 2>/dev/null
 _PG_TEST_DOW=7 _PG_TEST_HOUR=8  expect 0 "push allowed on Sunday morning"     git push -q origin main
+echo "tw4" > tw4.txt; git add tw4.txt; git commit -q -m "tw4" 2>/dev/null
+PG_TIME_OVERRIDE=1 _PG_TEST_DOW=1 _PG_TEST_HOUR=10 expect 0 "override lets a weekday-morning push through" git push -q origin main
 echo "PUSH_TIME_GATE=false" > "$PRIVACY_GUARD_CONFIG/guard.conf"
 
 echo "strict commit mode"
