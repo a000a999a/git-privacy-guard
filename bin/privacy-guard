@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# privacy-guard: keeps private data (and secrets) out of commits pushed to public remotes.
+# privacy-guard: keeps private data (and secrets) out of commits pushed to any remote.
 #
-# Two checks run over every added line and every commit message:
-#   1. gitleaks (default rules)            -> real secrets: API keys, tokens, passwords
-#   2. your private lists (never in git)   -> denylist regexes + titles (case-insensitive)
+# Three checks run on every push:
+#   1. time window — pushes only allowed on weekends or weekday evenings (configurable)
+#   2. gitleaks (default rules)            -> real secrets: API keys, tokens, passwords
+#   3. your private lists (never in git)   -> denylist regexes + titles (case-insensitive)
 #
 # Modes (normally called by the hooks in ../hooks):
 #   privacy-guard hook pre-commit                 scan staged changes      (warn by default)
 #   privacy-guard hook commit-msg <file>          scan the commit message  (warn by default)
-#   privacy-guard hook pre-push <remote> <url>    scan outgoing commits    (block if public)
+#   privacy-guard hook pre-push <remote> <url>    scan outgoing commits    (block)
 #   privacy-guard audit [--history]               scan this repo's tree, or all of its history
 set -uo pipefail
 
@@ -20,7 +21,8 @@ GH="${GH:-$(command -v gh || true)}"
 
 # Overridable in $CONF_DIR/guard.conf
 COMMIT_MODE=warn        # warn | block   (pre-commit and commit-msg)
-PRIVATE_PUSH_MODE=warn  # warn | block   (list findings when the remote is a private GitHub repo)
+PUSH_TIME_GATE=true     # true | false   (enforce push time window)
+PUSH_EVENING_HOUR=18    # weekday pushes allowed from this hour onward (0-23)
 
 [ -f "$CONF_DIR/guard.conf" ] && . "$CONF_DIR/guard.conf"
 
@@ -29,6 +31,20 @@ trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$CACHE_DIR"
 
 say() { printf 'privacy-guard: %s\n' "$*" >&2; }
+
+# ── time window ──────────────────────────────────────────────────────────────
+
+check_push_time_window() {
+    [ "$PUSH_TIME_GATE" = true ] || return 0
+    local dow hour
+    dow=${_PG_TEST_DOW:-$(date +%u)}    # 1=Mon..7=Sun; _PG_TEST_* override for testing
+    hour=${_PG_TEST_HOUR:-$(date +%-H)} # 0-23 without leading zero
+    [ "$dow" -ge 6 ] && return 0
+    [ "$hour" -ge "$PUSH_EVENING_HOUR" ] && return 0
+    say "push BLOCKED: only allowed on weekends or weekdays from ${PUSH_EVENING_HOUR}:00 onward."
+    say "Current: $(date '+%A %H:%M'). Wait for the evening window or the weekend."
+    return 1
+}
 
 # ── private lists ────────────────────────────────────────────────────────────
 
@@ -197,6 +213,7 @@ hook_commit_msg() {
 hook_pre_push() {
     local remote="$1" url="$2"
     cat > "$TMP/stdin"
+    check_push_time_window || return 1
     load_lists
     local vis; vis="$(remote_visibility "$url")"
     local zero=0000000000000000000000000000000000000000
@@ -233,12 +250,8 @@ hook_pre_push() {
         return 1
     fi
     if [ $list_bad -eq 1 ]; then
-        if [ "$vis" = private ] && [ "$PRIVATE_PUSH_MODE" != block ]; then
-            say "(private repo -- warning only. It would be BLOCKED if this repo were public.)"
-        else
-            say "push BLOCKED ($vis remote). $FIX_HINT"
-            return 1
-        fi
+        say "push BLOCKED ($vis remote). $FIX_HINT"
+        return 1
     fi
     chain_local_hook pre-push "$@" < "$TMP/stdin"
 }

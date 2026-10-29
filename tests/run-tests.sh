@@ -19,6 +19,7 @@ git config --global init.defaultBranch main
 printf '%s\n' '\b192\.168\.[0-9]{1,3}\.[0-9]{1,3}\b' '\bsecret-host\b' > "$PRIVACY_GUARD_CONFIG/denylist.txt"
 printf '%s\n' 'Test Movie Title' 'Café Example' > "$PRIVACY_GUARD_CONFIG/titles.txt"
 : > "$PRIVACY_GUARD_CONFIG/allowlist.txt"
+echo "PUSH_TIME_GATE=false" > "$PRIVACY_GUARD_CONFIG/guard.conf"
 
 pass=0 fail=0
 ok()  { pass=$((pass + 1)); echo "  ok    $1"; }
@@ -75,11 +76,23 @@ git commit -q -m "g" 2>/dev/null
 expect 1 "push with a GitHub token is blocked" git push -q origin main
 git reset -q --hard HEAD~1
 
+echo "time window"
+echo "PUSH_TIME_GATE=true" > "$PRIVACY_GUARD_CONFIG/guard.conf"
+echo "tw" > tw.txt; git add tw.txt; git commit -q -m "tw" 2>/dev/null
+_PG_TEST_DOW=1 _PG_TEST_HOUR=10 expect 1 "push blocked on weekday morning"    git push -q origin main
+_PG_TEST_DOW=5 _PG_TEST_HOUR=17 expect 1 "push blocked on Friday afternoon"   git push -q origin main
+_PG_TEST_DOW=6 _PG_TEST_HOUR=10 expect 0 "push allowed on Saturday morning"   git push -q origin main
+echo "tw2" > tw2.txt; git add tw2.txt; git commit -q -m "tw2" 2>/dev/null
+_PG_TEST_DOW=3 _PG_TEST_HOUR=19 expect 0 "push allowed on Wednesday evening"  git push -q origin main
+echo "tw3" > tw3.txt; git add tw3.txt; git commit -q -m "tw3" 2>/dev/null
+_PG_TEST_DOW=7 _PG_TEST_HOUR=8  expect 0 "push allowed on Sunday morning"     git push -q origin main
+echo "PUSH_TIME_GATE=false" > "$PRIVACY_GUARD_CONFIG/guard.conf"
+
 echo "strict commit mode"
-echo "COMMIT_MODE=block" > "$PRIVACY_GUARD_CONFIG/guard.conf"
+printf 'PUSH_TIME_GATE=false\nCOMMIT_MODE=block\n' > "$PRIVACY_GUARD_CONFIG/guard.conf"
 echo "192.168.1.1" > h.txt; git add h.txt
 expect 1 "commit is blocked in block mode"   git commit -q -m "h"
-rm "$PRIVACY_GUARD_CONFIG/guard.conf"; git reset -q
+echo "PUSH_TIME_GATE=false" > "$PRIVACY_GUARD_CONFIG/guard.conf"; git reset -q
 
 echo "new branch on the remote"
 git checkout -q -b feature

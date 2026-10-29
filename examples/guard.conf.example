@@ -1,0 +1,6 @@
+# guard.conf — optional overrides for privacy-guard
+# Place in ~/.config/git-privacy-guard/guard.conf
+
+# COMMIT_MODE=warn        # warn | block   (pre-commit and commit-msg)
+# PUSH_TIME_GATE=true     # true | false   (enforce push time window)
+# PUSH_EVENING_HOUR=18    # weekday pushes allowed from this hour onward (0-23)

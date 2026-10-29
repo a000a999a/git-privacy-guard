@@ -1,6 +1,6 @@
 #!/bin/sh
-# Claude Code PreToolUse hook (Bash). Asks the user before any command that would skip or
-# weaken git hooks (and with them privacy-guard) or rewrite history on a remote.
+# Claude Code PreToolUse hook (Bash). Gates git pushes (time window + bypass detection)
+# and blocks commands that would skip or weaken the privacy-guard hooks.
 # It only reads the command text from the hook's JSON input; it runs nothing else.
 input=$(cat)
 m() { printf '%s' "$input" | /usr/bin/grep -Eq -e "$1"; }
@@ -16,6 +16,16 @@ elif m 'filter-(repo|branch)'; then
     reason="rewrites git history (filter-repo / filter-branch)"
 elif m 'core\.hooks[Pp]ath' && ! m '--get[^|;&"]*core\.hooks[Pp]ath'; then
     reason="changes core.hooksPath, which could switch off privacy-guard"
+fi
+
+# Time-window gate: any git push only on weekends or weekday evenings
+if m '\bgit\b.*\bpush\b'; then
+    _dow=$(date +%u)
+    _hour=$(date +%-H)
+    if [ "$_dow" -lt 6 ] && [ "$_hour" -lt 18 ]; then
+        _tr="push outside allowed hours (weekdays only after 18:00, weekends anytime). Now: $(date '+%A %H:%M')"
+        reason="${reason:+$reason; }$_tr"
+    fi
 fi
 
 [ -z "$reason" ] && exit 0

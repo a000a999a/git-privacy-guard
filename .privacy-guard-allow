@@ -1,6 +1,9 @@
 # This repo documents and tests the guard itself, so it contains sample IPs, example
-# torrent-site names and git's all-zeros object id. Exact texts, case-insensitive.
+# torrent-site names, git's all-zeros object id, and common English phrases that
+# happen to be movie titles. Exact texts, case-insensitive.
 0000000000000000000000000000000000000000
+the guard
+the message
 100.64.0.0
 192.168.1.1
 192.168.7.7
