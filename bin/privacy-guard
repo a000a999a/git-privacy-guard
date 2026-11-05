@@ -23,6 +23,8 @@ GH="${GH:-$(command -v gh || true)}"
 COMMIT_MODE=warn        # warn | block   (pre-commit and commit-msg)
 PUSH_TIME_GATE=true     # true | false   (enforce push time window)
 PUSH_EVENING_HOUR=18    # weekday pushes allowed from this hour onward (0-23)
+PUSH_MORNING_HOUR=7     # weekday pushes allowed up to this hour (0-23)
+PUSH_MORNING_MIN=30     # ... and this minute (0-59), so default = until 07:30
 
 [ -f "$CONF_DIR/guard.conf" ] && . "$CONF_DIR/guard.conf"
 
@@ -45,12 +47,18 @@ list_stats() {
 check_push_time_window() {
     [ "$PUSH_TIME_GATE" = true ] || return 0
     [ "${PG_TIME_OVERRIDE:-}" = 1 ] && { say "time-window override active"; return 0; }
-    local dow hour
+    local dow hour min
     dow=${_PG_TEST_DOW:-$(date +%u)}    # 1=Mon..7=Sun; _PG_TEST_* override for testing
     hour=${_PG_TEST_HOUR:-$(date +%-H)} # 0-23 without leading zero
+    min=${_PG_TEST_MIN:-$(date +%-M)}   # 0-59 without leading zero
+    # Weekends (Sat=6, Sun=7): always allowed
     [ "$dow" -ge 6 ] && return 0
+    # Weekday evening window: from PUSH_EVENING_HOUR onward
     [ "$hour" -ge "$PUSH_EVENING_HOUR" ] && return 0
-    say "push BLOCKED: only allowed on weekends or weekdays from ${PUSH_EVENING_HOUR}:00 onward."
+    # Weekday morning window: up to PUSH_MORNING_HOUR:PUSH_MORNING_MIN
+    [ "$hour" -lt "$PUSH_MORNING_HOUR" ] && return 0
+    [ "$hour" -eq "$PUSH_MORNING_HOUR" ] && [ "$min" -le "$PUSH_MORNING_MIN" ] && return 0
+    say "push BLOCKED: weekday pushes only allowed ${PUSH_EVENING_HOUR}:00–$(printf '%02d:%02d' "$PUSH_MORNING_HOUR" "$PUSH_MORNING_MIN") and weekends."
     say "Current: $(date '+%A %H:%M'). Use PG_TIME_OVERRIDE=1 with explicit approval."
     return 1
 }
