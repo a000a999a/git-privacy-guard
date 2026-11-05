@@ -32,6 +32,14 @@ mkdir -p "$CACHE_DIR"
 
 say() { printf 'privacy-guard: %s\n' "$*" >&2; }
 
+list_stats() {
+    local t=0 d=0
+    [ -s "$TMP/titles" ] && t=$(wc -l < "$TMP/titles")
+    [ -s "$TMP/deny" ] && d=$(wc -l < "$TMP/deny")
+    local gl="ok"; [ ! -x "$GITLEAKS" ] && gl="missing!"
+    printf '%s titles, %s deny rules, gitleaks %s' "$t" "$d" "$gl"
+}
+
 # ── time window ──────────────────────────────────────────────────────────────
 
 check_push_time_window() {
@@ -196,6 +204,8 @@ hook_pre_commit() {
     if [ $bad -eq 1 ]; then
         if [ "$COMMIT_MODE" = block ]; then say "commit blocked. $FIX_HINT"; return 1; fi
         say "(warning only -- a push to a public repo will be blocked until this is fixed)"
+    else
+        say "pre-commit clean ($(list_stats))"
     fi
     chain_local_hook pre-commit "$@"
 }
@@ -207,6 +217,8 @@ hook_commit_msg() {
     if ! report "$TMP/found" "possible private data in the commit message:" || [ $rc -eq 2 ]; then
         if [ "$COMMIT_MODE" = block ]; then say "commit blocked -- reword the message."; return 1; fi
         say "(warning only -- a push to a public repo will be blocked until the message is reworded)"
+    else
+        say "commit-msg clean"
     fi
     chain_local_hook commit-msg "$@"
 }
@@ -254,6 +266,7 @@ hook_pre_push() {
         say "push BLOCKED ($vis remote). $FIX_HINT"
         return 1
     fi
+    say "pre-push clean — $vis remote ($(list_stats))"
     chain_local_hook pre-push "$@" < "$TMP/stdin"
 }
 
