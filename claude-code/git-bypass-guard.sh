@@ -27,14 +27,14 @@ if m '\bgit\b.*\bpush\b'; then
     _min=$(date +%-M)
     _blocked=0
     if [ "$_dow" -lt 6 ]; then
-        if [ "$_hour" -ge 18 ] || [ "$_hour" -lt 7 ] || { [ "$_hour" -eq 7 ] && [ "$_min" -le 30 ]; }; then
+        if [ "$_hour" -ge 19 ] || [ "$_hour" -lt 7 ] || { [ "$_hour" -eq 7 ] && [ "$_min" -le 30 ]; }; then
             _blocked=0
         else
             _blocked=1
         fi
     fi
     if [ "$_blocked" -eq 1 ] && ! m '\bPG_TIME_OVERRIDE=1\b'; then
-        time_reason="push outside allowed hours (weekdays 18:00-07:30 and weekends only). Now: $(date '+%A %H:%M'). To override: get explicit approval, then prefix the push command with PG_TIME_OVERRIDE=1"
+        time_reason="push outside allowed hours (weekdays 19:00-07:30 and weekends only). Now: $(date '+%A %H:%M'). To override: get explicit approval, then prefix the push command with PG_TIME_OVERRIDE=1"
     fi
 fi
 

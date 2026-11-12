@@ -4,7 +4,8 @@ Global git hooks that stop private data from reaching any remote — public or p
 Not just secrets, but the things secret scanners don't know are private, such as your
 home network addresses, host names, home directory, private e-mail, and the titles in
 your own media library. Pushes are also gated by a time window: weekends anytime,
-weekday evenings only.
+weekday evenings only. Commits made during work hours are automatically redated to the
+evening so daytime timestamps never appear on GitHub.
 
 ## What it checks
 
@@ -22,6 +23,7 @@ Commits and commit messages are also scanned:
 |---|---|---|
 | `pre-commit` | staged changes | warn |
 | `commit-msg` | the commit message | warn |
+| `post-commit` | redates work-hour timestamps to evening | automatic |
 | `pre-push` | time window + every outgoing commit, files and messages, plus annotated tag messages | **block** all remotes |
 
 A remote's visibility (public/private) is still detected via `gh api` (cached for a
@@ -79,14 +81,14 @@ tests/run-tests.sh                 # end-to-end tests in a temp dir
 ## Time window
 
 By default, pushes are only allowed on weekends (Saturday and Sunday, any time) or on
-weekdays between 18:00 and 07:30. This prevents accidental pushes during work hours.
+weekdays between 19:00 and 07:30. This prevents accidental pushes during work hours.
 
 Configure in `guard.conf`:
 
 | Setting | Default | Effect |
 |---|---|---|
 | `PUSH_TIME_GATE` | `true` | `false` disables the time check entirely |
-| `PUSH_EVENING_HOUR` | `18` | weekday pushes allowed from this hour onward (0-23) |
+| `PUSH_EVENING_HOUR` | `19` | weekday pushes allowed from this hour onward (0-23); also the redate target for work-hour commits |
 | `PUSH_MORNING_HOUR` | `7` | weekday pushes allowed up to this hour (0-23) |
 | `PUSH_MORNING_MIN` | `30` | ... and this minute (0-59), so default = until 07:30 |
 
@@ -99,10 +101,18 @@ PG_TIME_OVERRIDE=1 git push origin main
 
 This bypasses the time check only — content checks still run.
 
+## Timestamp redating
+
+Commits made on weekdays during work hours (between 07:31 and the evening hour) are
+automatically redated by the `post-commit` hook. Both the author and committer timestamps
+are set to the evening hour (default 19:00) of the same day, so GitHub never shows a
+daytime timestamp. The commit itself is never blocked — only the metadata date shifts.
+Weekends and evening/night commits keep their real timestamps.
+
 ## Claude Code: gatekeeper hook
 
 `claude-code/git-bypass-guard.sh` is a Claude Code `PreToolUse` hook for the Bash tool.
-It enforces the same push time window (weekends or weekdays 18:00–07:30) on any `git push`
+It enforces the same push time window (weekends or weekdays 19:00–07:30) on any `git push`
 command Claude runs, and asks for approval before commands that would skip git hooks
 (`--no-verify`, `commit -n`), change `core.hooksPath`, force-push, or rewrite history
 (`filter-repo`, `filter-branch`). It only reads the command text. Install it on the

@@ -9,6 +9,7 @@
 # Modes (normally called by the hooks in ../hooks):
 #   privacy-guard hook pre-commit                 scan staged changes      (warn by default)
 #   privacy-guard hook commit-msg <file>          scan the commit message  (warn by default)
+#   privacy-guard hook post-commit                redate work-hour commits to evening
 #   privacy-guard hook pre-push <remote> <url>    scan outgoing commits    (block)
 #   privacy-guard audit [--history]               scan this repo's tree, or all of its history
 set -uo pipefail
@@ -22,7 +23,7 @@ GH="${GH:-$(command -v gh || true)}"
 # Overridable in $CONF_DIR/guard.conf
 COMMIT_MODE=warn        # warn | block   (pre-commit and commit-msg)
 PUSH_TIME_GATE=true     # true | false   (enforce push time window)
-PUSH_EVENING_HOUR=18    # weekday pushes allowed from this hour onward (0-23)
+PUSH_EVENING_HOUR=19    # weekday pushes allowed from this hour onward (0-23)
 PUSH_MORNING_HOUR=7     # weekday pushes allowed up to this hour (0-23)
 PUSH_MORNING_MIN=30     # ... and this minute (0-59), so default = until 07:30
 
@@ -231,6 +232,27 @@ hook_commit_msg() {
     chain_local_hook commit-msg "$@"
 }
 
+hook_post_commit() {
+    [ "${_PG_REDATE:-}" = 1 ] && return 0
+    local dow hour min
+    dow=${_PG_TEST_DOW:-$(date +%u)}
+    hour=${_PG_TEST_HOUR:-$(date +%-H)}
+    min=${_PG_TEST_MIN:-$(date +%-M)}
+    [ "$dow" -ge 6 ] && return 0
+    local restricted=0
+    if [ "$hour" -ge "$PUSH_EVENING_HOUR" ] || [ "$hour" -lt "$PUSH_MORNING_HOUR" ] || { [ "$hour" -eq "$PUSH_MORNING_HOUR" ] && [ "$min" -le "$PUSH_MORNING_MIN" ]; }; then
+        restricted=0
+    else
+        restricted=1
+    fi
+    [ "$restricted" -eq 0 ] && return 0
+    local new_date
+    new_date=$(date -d "today ${PUSH_EVENING_HOUR}:00:00" -R)
+    _PG_REDATE=1 GIT_COMMITTER_DATE="$new_date" git commit --amend --no-edit --date="$new_date" --no-verify -q 2>/dev/null
+    say "timestamp redated to ${PUSH_EVENING_HOUR}:00 (was during work hours)"
+    chain_local_hook post-commit "$@"
+}
+
 hook_pre_push() {
     local remote="$1" url="$2"
     cat > "$TMP/stdin"
@@ -298,9 +320,10 @@ audit() {
 case "${1:-}" in
     hook)
         case "${2:-}" in
-            pre-commit) shift 2; hook_pre_commit "$@" ;;
-            commit-msg) shift 2; hook_commit_msg "$@" ;;
-            pre-push)   shift 2; hook_pre_push "$@" ;;
+            pre-commit)  shift 2; hook_pre_commit "$@" ;;
+            commit-msg)  shift 2; hook_commit_msg "$@" ;;
+            post-commit) shift 2; hook_post_commit "$@" ;;
+            pre-push)    shift 2; hook_pre_push "$@" ;;
             *) say "unknown hook ${2:-}"; exit 2 ;;
         esac ;;
     audit) shift; audit "$@" ;;

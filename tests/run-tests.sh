@@ -76,18 +76,19 @@ git commit -q -m "g" 2>/dev/null
 expect 1 "push with a GitHub token is blocked" git push -q origin main
 git reset -q --hard HEAD~1
 
-echo "time window (weekdays 18:00-07:30, weekends 24h)"
+echo "time window (weekdays 19:00-07:30, weekends 24h)"
 echo "PUSH_TIME_GATE=true" > "$PRIVACY_GUARD_CONFIG/guard.conf"
 echo "tw" > tw.txt; git add tw.txt; git commit -q -m "tw" 2>/dev/null
 _PG_TEST_DOW=1 _PG_TEST_HOUR=10 _PG_TEST_MIN=0  expect 1 "push blocked on weekday 10:00"          git push -q origin main
-_PG_TEST_DOW=5 _PG_TEST_HOUR=17 _PG_TEST_MIN=0  expect 1 "push blocked on Friday 17:00"            git push -q origin main
+_PG_TEST_DOW=5 _PG_TEST_HOUR=17 _PG_TEST_MIN=0  expect 1 "push blocked on Friday 17:00"             git push -q origin main
+_PG_TEST_DOW=3 _PG_TEST_HOUR=18 _PG_TEST_MIN=30 expect 1 "push blocked on Wednesday 18:30"        git push -q origin main
 _PG_TEST_DOW=1 _PG_TEST_HOUR=7  _PG_TEST_MIN=31 expect 1 "push blocked on weekday 07:31"           git push -q origin main
 _PG_TEST_DOW=2 _PG_TEST_HOUR=8  _PG_TEST_MIN=0  expect 1 "push blocked on weekday 08:00"           git push -q origin main
 _PG_TEST_DOW=1 _PG_TEST_HOUR=7  _PG_TEST_MIN=30 expect 0 "push allowed on weekday 07:30"           git push -q origin main
 echo "tw2" > tw2.txt; git add tw2.txt; git commit -q -m "tw2" 2>/dev/null
 _PG_TEST_DOW=1 _PG_TEST_HOUR=6  _PG_TEST_MIN=0  expect 0 "push allowed on weekday 06:00"           git push -q origin main
 echo "tw3" > tw3.txt; git add tw3.txt; git commit -q -m "tw3" 2>/dev/null
-_PG_TEST_DOW=3 _PG_TEST_HOUR=19 _PG_TEST_MIN=0  expect 0 "push allowed on Wednesday 19:00"         git push -q origin main
+_PG_TEST_DOW=3 _PG_TEST_HOUR=19 _PG_TEST_MIN=0  expect 0 "push allowed on Wednesday 19:00"          git push -q origin main
 echo "tw4" > tw4.txt; git add tw4.txt; git commit -q -m "tw4" 2>/dev/null
 _PG_TEST_DOW=6 _PG_TEST_HOUR=10 _PG_TEST_MIN=0  expect 0 "push allowed on Saturday 10:00"          git push -q origin main
 echo "tw5" > tw5.txt; git add tw5.txt; git commit -q -m "tw5" 2>/dev/null
@@ -95,6 +96,50 @@ _PG_TEST_DOW=7 _PG_TEST_HOUR=8  _PG_TEST_MIN=0  expect 0 "push allowed on Sunday
 echo "tw6" > tw6.txt; git add tw6.txt; git commit -q -m "tw6" 2>/dev/null
 PG_TIME_OVERRIDE=1 _PG_TEST_DOW=1 _PG_TEST_HOUR=10 _PG_TEST_MIN=0 expect 0 "override lets a blocked push through" git push -q origin main
 echo "PUSH_TIME_GATE=false" > "$PRIVACY_GUARD_CONFIG/guard.conf"
+
+echo "post-commit timestamp redate"
+echo "PUSH_TIME_GATE=false" > "$PRIVACY_GUARD_CONFIG/guard.conf"
+echo "rd1" > rd1.txt; git add rd1.txt
+_PG_TEST_DOW=2 _PG_TEST_HOUR=14 _PG_TEST_MIN=0 git commit -q -m "rd1" 2>/dev/null
+rd_author=$(git log -1 --format='%aI')
+rd_committer=$(git log -1 --format='%cI')
+if echo "$rd_author" | grep -q 'T19:00:00' && echo "$rd_committer" | grep -q 'T19:00:00'; then
+    ok "work-hour commit redated to 19:00 (author+committer)"
+else
+    bad "work-hour commit redated to 19:00 (author=$rd_author, committer=$rd_committer)"
+fi
+echo "rd2" > rd2.txt; git add rd2.txt
+_PG_TEST_DOW=2 _PG_TEST_HOUR=20 _PG_TEST_MIN=0 git commit -q -m "rd2" 2>/dev/null
+rd_author=$(git log -1 --format='%aI')
+if echo "$rd_author" | grep -qv 'T19:00:00'; then
+    ok "evening commit keeps real timestamp"
+else
+    bad "evening commit keeps real timestamp (author=$rd_author)"
+fi
+echo "rd3" > rd3.txt; git add rd3.txt
+_PG_TEST_DOW=6 _PG_TEST_HOUR=11 _PG_TEST_MIN=0 git commit -q -m "rd3" 2>/dev/null
+rd_author=$(git log -1 --format='%aI')
+if echo "$rd_author" | grep -qv 'T19:00:00'; then
+    ok "weekend commit keeps real timestamp"
+else
+    bad "weekend commit keeps real timestamp (author=$rd_author)"
+fi
+echo "rd4" > rd4.txt; git add rd4.txt
+_PG_TEST_DOW=1 _PG_TEST_HOUR=7 _PG_TEST_MIN=30 git commit -q -m "rd4" 2>/dev/null
+rd_author=$(git log -1 --format='%aI')
+if echo "$rd_author" | grep -qv 'T19:00:00'; then
+    ok "07:30 commit keeps real timestamp (inside morning window)"
+else
+    bad "07:30 commit keeps real timestamp (author=$rd_author)"
+fi
+echo "rd5" > rd5.txt; git add rd5.txt
+_PG_TEST_DOW=1 _PG_TEST_HOUR=7 _PG_TEST_MIN=31 git commit -q -m "rd5" 2>/dev/null
+rd_author=$(git log -1 --format='%aI')
+if echo "$rd_author" | grep -q 'T19:00:00'; then
+    ok "07:31 commit redated to 19:00 (just outside morning window)"
+else
+    bad "07:31 commit redated to 19:00 (author=$rd_author)"
+fi
 
 echo "strict commit mode"
 printf 'PUSH_TIME_GATE=false\nCOMMIT_MODE=block\n' > "$PRIVACY_GUARD_CONFIG/guard.conf"

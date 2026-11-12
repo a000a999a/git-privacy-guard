@@ -3,6 +3,6 @@
 
 # COMMIT_MODE=warn        # warn | block   (pre-commit and commit-msg)
 # PUSH_TIME_GATE=true     # true | false   (enforce push time window)
-# PUSH_EVENING_HOUR=18    # weekday pushes allowed from this hour onward (0-23)
+# PUSH_EVENING_HOUR=19    # weekday pushes allowed from this hour onward (0-23)
 # PUSH_MORNING_HOUR=7     # weekday pushes allowed up to this hour (0-23)
 # PUSH_MORNING_MIN=30     # ... and this minute (0-59), so default = until 07:30
