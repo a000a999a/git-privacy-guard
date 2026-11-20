@@ -9,7 +9,7 @@
 # Modes (normally called by the hooks in ../hooks):
 #   privacy-guard hook pre-commit                 scan staged changes      (warn by default)
 #   privacy-guard hook commit-msg <file>          scan the commit message  (warn by default)
-#   privacy-guard hook post-commit                redate work-hour commits to evening
+#   privacy-guard hook post-commit                redate out-of-window commits to evening
 #   privacy-guard hook pre-push <remote> <url>    scan outgoing commits    (block)
 #   privacy-guard audit [--history]               scan this repo's tree, or all of its history
 set -uo pipefail
@@ -249,7 +249,7 @@ hook_post_commit() {
     local new_date
     new_date=$(date -d "today ${PUSH_EVENING_HOUR}:00:00" -R)
     _PG_REDATE=1 GIT_COMMITTER_DATE="$new_date" git commit --amend --no-edit --date="$new_date" --no-verify -q 2>/dev/null
-    say "timestamp redated to ${PUSH_EVENING_HOUR}:00 (was during work hours)"
+    say "timestamp redated to ${PUSH_EVENING_HOUR}:00 (was outside allowed window)"
     chain_local_hook post-commit "$@"
 }
 

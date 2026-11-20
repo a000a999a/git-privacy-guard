@@ -18,8 +18,8 @@ remote.
 | **Media titles** | Movie and series names from your library (Radarr, Sonarr, Transmission, NAS folders) | auto-generated title list, matched as whole phrases |
 | **Torrent artifacts** | Site names, magnet links, 40-character info hashes | denylist regex |
 | **Places** | Town names, addresses, locations you don't want tied to your account | denylist regex |
-| **Work-hour timestamps** | Daytime commit times that reveal when you're working on personal projects | post-commit redate to evening |
-| **Work-hour pushes** | Pushes during office hours | time-window gate (weekends and evenings only) |
+| **Out-of-window timestamps** | Commit times that fall outside your configured time window | post-commit redate to evening |
+| **Out-of-window pushes** | Pushes outside your allowed hours | time-window gate (weekends and evenings only) |
 
 Everything above is checked against **added lines**, **commit messages**, and
 **annotated tag messages** in the outgoing commits — not just the latest commit but every
@@ -33,7 +33,7 @@ Four hooks run automatically on every git operation:
 |---|---|---|
 | `pre-commit` | you run `git commit` | scans staged changes — **warns** (configurable to block) |
 | `commit-msg` | after you write the message | scans the commit message — **warns** (configurable to block) |
-| `post-commit` | after the commit is created | redates work-hour timestamps to evening — **automatic** |
+| `post-commit` | after the commit is created | redates out-of-window timestamps to evening — **automatic** |
 | `pre-push` | you run `git push` | time-window check + full content scan of every outgoing commit — **blocks** on any finding |
 
 The pre-push hook is the hard gate. Local commits warn early so you can fix things before
@@ -160,7 +160,7 @@ Edit `guard.conf`:
 # COMMIT_MODE=warn           # set to block to also block commits (not just warn)
 ```
 
-For an urgent one-off push during restricted hours, prefix the command:
+For an urgent one-off push outside the allowed window, prefix the command:
 
 ```bash
 PG_TIME_OVERRIDE=1 git push origin main
@@ -250,7 +250,7 @@ the allowed range. `PG_TIME_OVERRIDE=1` bypasses this check for one push.
 ### Timestamp redating
 
 The post-commit hook fires after every commit. If the commit was made on a weekday during
-restricted hours (07:31 – 18:59 by default), it immediately amends the commit to set both
+outside the allowed window (07:31 – 18:59 by default), it immediately amends the commit to set both
 the author and committer timestamps to the evening hour (default 19:00) of the same day.
 
 This is transparent — you'll see `privacy-guard: timestamp redated to 19:00` after the

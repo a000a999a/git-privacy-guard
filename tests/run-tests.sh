@@ -104,9 +104,9 @@ _PG_TEST_DOW=2 _PG_TEST_HOUR=14 _PG_TEST_MIN=0 git commit -q -m "rd1" 2>/dev/nul
 rd_author=$(git log -1 --format='%aI')
 rd_committer=$(git log -1 --format='%cI')
 if echo "$rd_author" | grep -q 'T19:00:00' && echo "$rd_committer" | grep -q 'T19:00:00'; then
-    ok "work-hour commit redated to 19:00 (author+committer)"
+    ok "out-of-window commit redated to 19:00 (author+committer)"
 else
-    bad "work-hour commit redated to 19:00 (author=$rd_author, committer=$rd_committer)"
+    bad "out-of-window commit redated to 19:00 (author=$rd_author, committer=$rd_committer)"
 fi
 echo "rd2" > rd2.txt; git add rd2.txt
 _PG_TEST_DOW=2 _PG_TEST_HOUR=20 _PG_TEST_MIN=0 git commit -q -m "rd2" 2>/dev/null
